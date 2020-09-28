@@ -733,7 +733,11 @@ of the package `multiple-cursors', if it is installed."
 
 (defun rtags-buffer-file-name (&optional buffer)
   "Return the BUFFER file name."
-  (buffer-file-name (or (buffer-base-buffer buffer) buffer)))
+  (let ((bufff (buffer-file-name (or (buffer-base-buffer buffer) buffer))))
+    ;; (if bufff
+        ;; (setq bufff (replace-regexp-in-string "\/+remote" "" bufff))
+      ;; )
+    bufff))
 
 (defun rtags-remove (predicate seq &optional not)
   "RTags remove."
@@ -1265,20 +1269,20 @@ to only call this when `rtags-socket-address' is defined.
         (t arg)))
 
 (cl-defun rtags-call-rc (&rest arguments
-                             &key (path (rtags-buffer-file-name))
-                             unsaved
-                             async ;; nil or a cons (process-filter . sentinel)
-                             path-filter
-                             path-filter-regex
-                             range-filter
-                             (output (list t nil)) ; not supported for async
-                             range-min
-                             range-max
-                             noerror
-                             timeout
-                             silent
-                             silent-query
-                             &allow-other-keys)
+                               &key (path (rtags-buffer-file-name))
+                               unsaved
+                               async ;; nil or a cons (process-filter . sentinel)
+                               path-filter
+                               path-filter-regex
+                               range-filter
+                               (output (list t nil)) ; not supported for async
+                               range-min
+                               range-max
+                               noerror
+                               timeout
+                               silent
+                               silent-query
+                               &allow-other-keys)
   (save-excursion
     (let ((rc (rtags-executable-find rtags-rc-binary-name))
           (tempfile))
@@ -1348,7 +1352,14 @@ to only call this when `rtags-socket-address' is defined.
                 (set-process-sentinel proc (cdr async)))
               t)
           (let ((result (apply #'process-file rc nil output nil arguments)))
+            ;; (with-current-buffer (car output)
+            ;; (message (buffer-string)))
             (goto-char (point-min))
+            (if (string-prefix-p "/" (buffer-string))
+                (insert "/remote"))
+            (if (> (length (buffer-string)) 20)
+                (message (substring (buffer-string) 0 20))
+              (message (concat "short buffer:" (buffer-string))))
             (save-excursion
               (cond ((equal result rtags-exit-code-success)
                      (when rtags-autostart-diagnostics
@@ -2711,6 +2722,11 @@ to find anything about the item."
 (defun rtags-buffer-lines () (count-lines (point-min) (point-max)))
 ;;;###autoload
 
+(defun remote-fix (results)
+  (if (string-prefix-p "/" (car results))
+      (setcar results (concat "/remote" (car results))))
+  results)
+
 (defun rtags-find-symbol-at-point (&optional prefix)
   "Find the natural target for the symbol under the cursor and moves to that location.
 For references this means to jump to the definition/declaration of the referenced symbol (it jumps to the definition if it is indexed).
@@ -2725,16 +2741,19 @@ If called with prefix, open first match in other window"
             (tagname (or (rtags-current-symbol) (rtags-current-token)))
             (fn (rtags-buffer-file-name)))
         (rtags-reparse-file-if-needed)
-        (let ((results (with-temp-buffer
-                         (rtags-call-rc :path fn :path-filter pathfilter "-f" arg (if rtags-multiple-targets "--all-targets"))
-                         (when (and (= (rtags-buffer-lines) 0)
-                                    rtags-follow-symbol-try-harder
-                                    (> (length tagname) 0))
-                           (rtags-call-rc :path-filter pathfilter :path fn "-F" tagname "--definition-only" "-M" "1" "--dependency-filter" fn)
-                           (when (= (rtags-buffer-lines) 0)
-                             (rtags-call-rc :path fn :path-filter pathfilter "-F" tagname "-M" "1" "--dependency-filter" fn)))
-                         (cons (buffer-string) (rtags-buffer-lines))))
+        (let ((results (remote-fix
+                        (with-temp-buffer
+                          (rtags-call-rc :path fn :path-filter pathfilter "-f" arg (if rtags-multiple-targets "--all-targets"))
+                          (when (and (= (rtags-buffer-lines) 0)
+                                     rtags-follow-symbol-try-harder
+                                     (> (length tagname) 0))
+                            (rtags-call-rc :path-filter pathfilter :path fn "-F" tagname "--definition-only" "-M" "1" "--dependency-filter" fn)
+                            (when (= (rtags-buffer-lines) 0)
+                              (rtags-call-rc :path fn :path-filter pathfilter "-F" tagname "-M" "1" "--dependency-filter" fn)))
+                          (cons (buffer-string) (rtags-buffer-lines)))))
               (buffer (get-buffer rtags-buffer-name)))
+          
+          (message (car results))
           (when (and buffer
                      (eq (buffer-local-value 'rtags-results-buffer-type buffer) 'find-symbol-at-point))
             (rtags-delete-rtags-windows)
@@ -3639,6 +3658,8 @@ of diagnostics count"
                 (let ((rc-args '("-m" "--elisp")))
                   (when (> (length rtags-socket-file) 0)
                     (push (rtags--get-socket-file-switch) rc-args))
+                  (when (> (length rtags-socket-address) 0)
+                    (push (rtags--get-socket-address-switch) rc-args))
                   (unless rtags-spellcheck-enabled
                     (push "--no-spell-checking" rc-args))
                   (setq rtags-diagnostics-process
